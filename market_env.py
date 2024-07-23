@@ -1,73 +1,70 @@
 import gymnasium as gym
-from gymnasium.spaces import Dict, Box, Discrete
-from exchange import Exchange  # Import your Exchange class
+from gymnasium.spaces import Box
 import numpy as np
-from order import Order
+from exchange import Exchange
 from market_maker import Market_Maker
 from market_order import Market_Orders
 from reward import Rewards
+from order import Order
+
 
 class MarketEnv(gym.Env):
-    def __init__(self, init_price, action_range, price_range, target_quantity, target_time, penalty_rate):
+    def __init__(self, init_price, action_range, quantity_each_trade):
         super(MarketEnv, self).__init__()
-        self.target_quantity = target_quantity
-        self.target_time = target_time
-        self.remaining_quantity = target_quantity
-        self.remaining_time = target_time
-        self.penalty_rate = penalty_rate
         self.init_price = init_price
-        self.rewards = Rewards()
-        self.overall_trade_price = 0
-       
+        self.inventory = 0
+        self.last_mid_price = init_price
+        self.quantity_each_trade = quantity_each_trade
         
-        # Define action and observation space
-        # They must be gym.spaces objects
-        self.action_space = Discrete(action_range)  # Example for discrete actions
-
-        # Define observation space
-        low = np.array([-50, 0, 0, 0, 0, 0], dtype=np.float32)
-        high = np.array([100000, price_range, price_range, 100, 100, 100000], dtype=np.float32)
+        # Action space
+        self.action_space = gym.spaces.Discrete(action_range * 2 + 1)  # Buy, sell, or do nothing
+        
+        # Observation space
+        low = np.array([-10000, -1000000, 0, -100], dtype=np.float32)  # Adjusted for potential negative values
+        high = np.array([10000, 1000000, 1000, 100], dtype=np.float32)
         self.observation_space = Box(low=low, high=high, dtype=np.float32)
-        self.action_records = []
-        self.best_bid_records= []
-        self.best_ask_records = []
+        
+        # Initialize other components
+        self.exchange = Exchange(initial_mid=self.init_price, tick_size=0.01)
+        self.mm = Market_Maker(exchange=self.exchange)
+        self.mo = Market_Orders(exchange=self.exchange)
+        
+        
+        # Episode tracking
         self.episode = 0
-   
+        self.action_records = []
+        self.best_bid_records = []
+        self.best_ask_records = []
+        self.overall_trade_price = 0
+        
     def step(self, action):
-        truncated = False
-        # Interpret action and insert order
-        trade_price  = self.update_exchange_state(action=action)
-        new_state = self.get_state(action=action)
+        # Update exchange state
+        agent_ask_qty, agent_bid_qty = self.update_exchange_state(action=action)
+        
+        # Get new state
+        new_state = self.get_state()
+        
+        # Calculate reward
+        reward = self.rewards.calculate_reward(trade_price, order_size, self.inventory)
+        
+        # Update episode info
         self.action_records.append(action)
         self.best_ask_records.append(self.exchange.get_best_ask())
         self.best_bid_records.append(self.exchange.get_best_bid())
-        self.overall_trade_price += trade_price * action
-       
-        if new_state[-1] < 3 and new_state[0] > 0:
-            reward = -250
-        # elif action == 0:
-        #     reward = - self.rewards.calculate_dynamic_penalty(current_step=new_state[-1], total_steps=self.target_time,
-        #                                                        remaining_quantity=new_state[0], 
-        #                                                       penalty_rate=0.01, base_penalty=0.01, scale_type='linear')
-        # else:
-        #     reward = self.rewards.reward_for_market_impact(agent_avg_price=trade_price, 
-        #                                                    initial_market_price=self.exchange.price_before_execution, 
-        #                                                    zero_impact_reward=50, tolerance=0.05)
+        self.overall_trade_price += trade_price * order_size
+        self.inventory += order_size
         
-        else:
-            reward = self.rewards.reward_based_obs(imbalance_best=new_state[3], action=action) + self.rewards.reward_for_market_impact(agent_avg_price=trade_price, 
-                                                            initial_market_price=self.exchange.price_before_execution, 
-                                                            zero_impact_reward=50, tolerance=0.05) 
-
-                                                            
-
-
-       
-        done = new_state[-1] <= 0 or new_state[0] <= 0
-        info = {'agent_trade_price':trade_price, 'best_ask':self.exchange.get_best_ask()}  # Additional info, if any
-        #print(done)
-        return new_state, reward, truncated, done, info
-        # record bid ask in info
+        # For now, we'll set done to False always, as we don't have a natural termination condition
+        done = False
+        
+        info = {
+            'trade_price': trade_price,
+            'best_ask': self.exchange.get_best_ask(),
+            'best_bid': self.exchange.get_best_bid(),
+            'inventory': self.inventory
+        }
+        
+        return new_state, reward, done, False, info
 
     def reset(self, seed=None, options=None):
         self.action_records = []
@@ -98,43 +95,37 @@ class MarketEnv(gym.Env):
     def update_exchange_state(self, action):
         self.mm.new_simulated_limit_order_per_step()
         self.mo.new_simulated_market_order_per_step()
-        # Interpret action and insert order
-        if action == 0:
-            trade_price = 0
-            self.exchange.process_market_orders(agent_order_id=None)
-            self.exchange.limit_order_cancellation()
-        else:
-            order_direction = 'buy' if action > 0 else 'sell'
-            order = Order(quantity=abs(action), direction=order_direction, type="market", price=None)
-            self.exchange.market_order_placement(order)
-            trade_price = self.exchange.process_market_orders(agent_order_id=order.id)
-            self.exchange.limit_order_cancellation()
-        return trade_price
+
+        # Keep quantity same, only adjusting ask price and bid price
+        spread = self.exchange.get_spread()
+        mid_price = self.exchange.get_mid_price()
+        ask_price = mid_price + action * spread
+        bid_price = mid_price - action * spread
+
+
+        # Intercate with exchange
+        ask_order = Order(quantity=self.quantity_each_trade, direction='sell', type="limit", price=ask_price)
+        self.exchange.limit_order_placement(ask_order)
+        bid_order = Order(quantity=self.quantity_each_trade, direction='sell', type="limit", price=bid_price)
+        self.exchange.limit_order_placement(bid_order)
+        agent_ask_qty, agent_bid_qty = self.exchange.check_agent_order_filled(ask_price=ask_price, ask_qty=self.quantity_each_trade, bid_price=bid_price, bid_qty=self.quantity_each_trade)
+        return agent_ask_qty, agent_bid_qty
   
     def get_state(self, action):
         mid_price = self.exchange.get_mid_price()
         spread = self.exchange.get_spread()
         imbalance_best, imbalance_rest = self.exchange.get_book_imbalance()
-        self.remaining_quantity -= abs(action)
-        self.remaining_time -= 1
+       
         
         observation = np.array([
-            self.remaining_quantity,
             mid_price,
             spread,  # initial spread
             imbalance_best,  # initial imbalance
             imbalance_rest,  # initial aggregated bim
-            self.remaining_time,
         ], dtype=np.float32)
 
         return observation
 
-    def render(self, mode='human', close=False):
-        pass
-     
-    def close(self):
-        # Cleanup
-        pass
         
 
 
