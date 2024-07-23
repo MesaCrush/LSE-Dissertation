@@ -4,17 +4,19 @@ import numpy as np
 from exchange import Exchange
 from market_maker import Market_Maker
 from market_order import Market_Orders
-from reward import Rewards
+from rewardFuns import RewardFuns
 from order import Order
 
 
 class MarketEnv(gym.Env):
-    def __init__(self, init_price, action_range, quantity_each_trade):
+    def __init__(self, init_price, action_range, quantity_each_trade, max_steps):
         super(MarketEnv, self).__init__()
         self.init_price = init_price
         self.inventory = 0
         self.last_mid_price = init_price
         self.quantity_each_trade = quantity_each_trade
+        self.max_steps = max_steps
+        self.current_step = 0
         
         # Action space
         self.action_space = gym.spaces.Discrete(action_range * 2 + 1)  # Buy, sell, or do nothing
@@ -28,70 +30,42 @@ class MarketEnv(gym.Env):
         self.exchange = Exchange(initial_mid=self.init_price, tick_size=0.01)
         self.mm = Market_Maker(exchange=self.exchange)
         self.mo = Market_Orders(exchange=self.exchange)
-        
+        self.rewardfuns = RewardFuns()
         
         # Episode tracking
         self.episode = 0
         self.action_records = []
         self.best_bid_records = []
         self.best_ask_records = []
-        self.overall_trade_price = 0
         
     def step(self, action):
         # Update exchange state
         agent_ask_qty, agent_bid_qty = self.update_exchange_state(action=action)
-        
+            
         # Get new state
         new_state = self.get_state()
         
         # Calculate reward
-        reward = self.rewards.calculate_reward(trade_price, order_size, self.inventory)
+        reward = self.rewardfuns.plain_reward(agent_bid_qty=agent_bid_qty, agent_ask_qty=agent_ask_qty)
+      
+        # Update inventory
+        self.inventory += agent_bid_qty - agent_ask_qty
         
-        # Update episode info
-        self.action_records.append(action)
-        self.best_ask_records.append(self.exchange.get_best_ask())
-        self.best_bid_records.append(self.exchange.get_best_bid())
-        self.overall_trade_price += trade_price * order_size
-        self.inventory += order_size
+        # Increment step counter
+        self.current_step += 1
         
-        # For now, we'll set done to False always, as we don't have a natural termination condition
-        done = False
+        # Check if episode is done
+        done = self.current_step >= self.max_steps
         
         info = {
-            'trade_price': trade_price,
-            'best_ask': self.exchange.get_best_ask(),
-            'best_bid': self.exchange.get_best_bid(),
-            'inventory': self.inventory
+            'agent_ask_qty': agent_ask_qty,
+            'agent_bid_qty': agent_bid_qty,
+            'inventory': self.inventory,
+            'current_step': self.current_step
         }
         
         return new_state, reward, done, False, info
-
-    def reset(self, seed=None, options=None):
-        self.action_records = []
-        self.exchange = Exchange(initial_mid=self.init_price, tick_size=0.01)
-        self.best_ask_records = [self.exchange.get_best_ask()]
-        self.best_bid_records = [self.exchange.get_best_bid()]
-        self.mm = Market_Maker(exchange=self.exchange)
-        self.mo = Market_Orders(exchange=self.exchange)
-        self.remaining_quantity = self.target_quantity
-        self.remaining_time = self.target_time
-        self.episode += 1
-        self.overall_trade_price = 0
-       
-        init_state = np.array([
-            self.target_quantity,
-            self.init_price,
-            0,  # initial spread
-            0,  # initial imbalance
-            0,  # initial aggregated bim
-            self.target_time,
-        ], dtype=np.float32)
-
-        info = {}
-    
-        return init_state, info
         
-
     def update_exchange_state(self, action):
         self.mm.new_simulated_limit_order_per_step()
         self.mo.new_simulated_market_order_per_step()
@@ -102,7 +76,6 @@ class MarketEnv(gym.Env):
         ask_price = mid_price + action * spread
         bid_price = mid_price - action * spread
 
-
         # Intercate with exchange
         ask_order = Order(quantity=self.quantity_each_trade, direction='sell', type="limit", price=ask_price)
         self.exchange.limit_order_placement(ask_order)
@@ -111,20 +84,39 @@ class MarketEnv(gym.Env):
         agent_ask_qty, agent_bid_qty = self.exchange.check_agent_order_filled(ask_price=ask_price, ask_qty=self.quantity_each_trade, bid_price=bid_price, bid_qty=self.quantity_each_trade)
         return agent_ask_qty, agent_bid_qty
   
-    def get_state(self, action):
+    def get_state(self):
         mid_price = self.exchange.get_mid_price()
         spread = self.exchange.get_spread()
-        imbalance_best, imbalance_rest = self.exchange.get_book_imbalance()
-       
+        order_imbalance, _ = self.exchange.get_book_imbalance()
+        mid_price_move = mid_price - self.last_mid_price
+        self.last_mid_price = mid_price
         
-        observation = np.array([
-            mid_price,
-            spread,  # initial spread
-            imbalance_best,  # initial imbalance
-            imbalance_rest,  # initial aggregated bim
+        return np.array([
+            self.inventory,
+            order_imbalance,
+            spread,
+            mid_price_move
         ], dtype=np.float32)
 
-        return observation
+    def reset(self, seed=None, options=None):
+        super().reset(seed=seed)
+        self.exchange = Exchange(initial_mid=self.init_price, tick_size=0.01)
+        self.mm = Market_Maker(exchange=self.exchange)
+        self.mo = Market_Orders(exchange=self.exchange)
+        
+        self.inventory = 0
+        self.last_mid_price = self.init_price
+        self.current_step = 0
+        self.episode += 1
+        
+        self.action_records = []
+        self.best_bid_records = [self.exchange.get_best_bid()]
+        self.best_ask_records = [self.exchange.get_best_ask()]
+        
+        initial_state = self.get_state()
+        info = {}
+        return initial_state, info
+ 
 
         
 

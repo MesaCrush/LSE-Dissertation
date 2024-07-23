@@ -1,56 +1,44 @@
-import unittest
+import numpy as np
 from market_env import MarketEnv
 
-class TestMarketEnv(unittest.TestCase):
-    def setUp(self):
-        # Initialize MarketEnv with some default parameters
-        self.env = MarketEnv(
-            init_price=100.0, 
-            action_range=10, 
-            price_range=200.0, 
-            target_quantity=1000, 
-            target_time=60, 
-            penalty_rate=0.01
-        )
+def test_market_env():
+    # Initialize the environment
+    env = MarketEnv(
+        init_price=100.0,
+        action_range=5,
+        quantity_each_trade=10,
+        max_steps=100
+    )
 
-    def test_initial_state(self):
-        # Test the initial state of the environment
-        initial_state = self.env.reset()
-        self.assertIn('remaining_quantity', initial_state)
-        self.assertIn('mid_price', initial_state)
-        # Add assertions for other state components here...
-        self.assertEqual(initial_state['remaining_quantity'], 1000)
-        self.assertEqual(initial_state['mid_price'], 100.0)
-        self.assertEqual(initial_state['remaining_time'], 60)
-       
-    
-    def test_step_function(self):
-        # Test the step function with a sample action
-        last_state = self.env.reset()
-        action = self.env.action_space.sample()  # Choose a random action
-        state, reward, done, info = self.env.step(action, last_state=last_state)
+    # Reset the environment and get the initial state
+    initial_state, _ = env.reset()
+    print(f"Initial State: {initial_state}")
 
-        # Assert the structure of the output
-        self.assertIsInstance(state, dict)
-        self.assertIsInstance(reward, float)
-        self.assertIsInstance(done, bool)
-        self.assertIsInstance(info, dict)
+    # Run a few steps with random actions
+    for step in range(5):
+        action = env.action_space.sample()  # Random action
+        new_state, reward, done, _, info = env.step(action)
+        
+        print(f"\nStep {step + 1}")
+        print(f"Action taken: {action}")
+        print(f"New State: {new_state}")
+        print(f"Reward: {reward}")
+        print(f"Done: {done}")
+        print(f"Info: {info}")
 
-        # Check if the remaining quantity is updated correctly
-        self.assertLessEqual(state['remaining_quantity'], self.env.remaining_quantity)
-        # Check if remaining time is decremented
-        self.assertEqual(state['remaining_time'], self.env.remaining_time - 1)
+        if done:
+            print("Episode finished early.")
+            break
 
-    def test_action_space(self):
-        # Test if the action space contains values within the expected range
-        action = self.env.action_space.sample()
-        self.assertGreaterEqual(action, 0)
-        self.assertLessEqual(action, 10)
+    # Print final exchange state
+    print("\nFinal Exchange State:")
+    print(f"Best Bid: {env.exchange.get_best_bid()}")
+    print(f"Best Ask: {env.exchange.get_best_ask()}")
+    print(f"Mid Price: {env.exchange.get_mid_price()}")
+    print(f"Spread: {env.exchange.get_spread()}")
+    bim_best, bim_rest = env.exchange.get_book_imbalance()
+    print(f"Book Imbalance (Best): {bim_best}")
+    print(f"Book Imbalance (Rest): {bim_rest}")
 
-    def tearDown(self):
-        # Clean up and close the environment
-        self.env.close()
-
-# This allows the test to be executed when the script is run directly
-# if __name__ == '__main__':
-#     unittest.main()
+if __name__ == "__main__":
+    test_market_env()
