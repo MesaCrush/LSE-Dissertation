@@ -2,14 +2,13 @@ import torch
 import numpy as np
 from config import device, MAX_STEPS
 
-def evaluate(env, agent, num_episodes=100, is_rl_agent=True):
+def evaluate(env, agent, num_episodes=100, is_rl_agent=True, alg='dqn'):
     average_pnls = []
     episode_inventories = []
     episode_lengths = []
     total_trades = []
     sharpe_ratios = []
     
-    # Choose a random episode to capture detailed data
     visualize_episode = np.random.randint(0, num_episodes)
     episode_data = None
     
@@ -25,11 +24,18 @@ def evaluate(env, agent, num_episodes=100, is_rl_agent=True):
         
         for t in range(env.max_steps):
             if is_rl_agent:
-                state_tensor = torch.FloatTensor(state).to(device)
+                state_tensor = torch.FloatTensor(state).unsqueeze(0).to(device)
                 with torch.no_grad():
-                    bid_probs, ask_probs = agent(state_tensor)
-                    bid_action = bid_probs.argmax().item()
-                    ask_action = ask_probs.argmax().item()
+                    if alg == 'a2c':  # A2C model
+                       
+                        bid_probs, ask_probs = agent[0](state_tensor)
+                        bid_action = bid_probs.argmax().item()
+                        ask_action = ask_probs.argmax().item()
+                    elif hasattr(agent, 'action_dim'):  # DQN model
+                        q_values = agent(state_tensor).squeeze()
+                        bid_action, ask_action = divmod(q_values.argmax().item(), agent.action_dim)
+                    else:
+                        raise ValueError("Unknown agent type")
                 action = [bid_action, ask_action]
             else:
                 action = agent.get_action(state, env)
@@ -41,7 +47,6 @@ def evaluate(env, agent, num_episodes=100, is_rl_agent=True):
             episode_returns.append(info['step_pnl'])
             num_trades += info['filled_bid'] + info['filled_ask']
             
-            # Capture data for visualization if this is the chosen episode
             if episode == visualize_episode:
                 episode_actions.append(action)
                 episode_market_data.append({
@@ -60,18 +65,17 @@ def evaluate(env, agent, num_episodes=100, is_rl_agent=True):
             if done:
                 break
         
-        steps = t + 1  # Total steps in this episode
+        steps = t + 1
         average_pnls.append(episode_pnl / steps)
         episode_inventories.append(np.mean(np.abs(episode_inventory)) / steps)
         episode_lengths.append(steps)
         total_trades.append(num_trades)
         
-        # Calculate Sharpe ratio for the episode
         if len(episode_returns) > 1:
             returns_mean = np.mean(episode_returns)
             returns_std = np.std(episode_returns)
             if returns_std != 0:
-                sharpe_ratio = np.sqrt(252) * returns_mean / returns_std  # Annualized Sharpe Ratio
+                sharpe_ratio = np.sqrt(252) * returns_mean / returns_std
                 sharpe_ratios.append(sharpe_ratio)
         
         if episode == visualize_episode:
@@ -88,8 +92,7 @@ def evaluate(env, agent, num_episodes=100, is_rl_agent=True):
         'mean_episode_length': np.mean(episode_lengths),
         'mean_trades_per_episode': np.mean(total_trades),
         'mean_sharpe_ratio': np.mean(sharpe_ratios) if sharpe_ratios else 0,
-        'episode_data': episode_data  # Add the captured episode data to the results
+        'episode_data': episode_data
     }
     
     return results
-

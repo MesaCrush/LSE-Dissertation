@@ -1,95 +1,81 @@
 import numpy as np
-import random
 from .order import Order
 
 class Market_Maker:
-    """
-    Simulate other market makers' behaviors. There are 2 types of market makers:
-    1) Insiders (sophisticated traders): their quote prices are correlated with BIM
-    2) Uninformed market makers: quote prices are randomized using geometric Brownian motion
-    """
     def __init__(self, exchange):
         self.exchange = exchange
-        self.bid_book = exchange.LOB['bid']
-        self.ask_book = exchange.LOB['ask']
-        
-    def uninformed_market_maker(self):
-        mid = self.exchange.get_mid_price()
-        half_spread = self.exchange.get_spread() / 2
- 
-        # Geometric Brownian Motion
-        # drift = -0.01
-        # vol = 0.05
-        # dt = 1 
-        # new_mid = mid * np.exp((drift - 0.5 * vol**2) * dt + vol * np.random.normal() * np.sqrt(dt))
-        vol = 0.001  # Reduced volatility for more stable short-term movements
-        dt = 1 
-        price_change = mid * vol * np.random.normal() * np.sqrt(dt)
-        new_mid = mid + price_change
-        
-        random_multiplier = np.random.randint(1, 3)
-        bid_price = new_mid - half_spread * random_multiplier
-        ask_price = new_mid + half_spread * random_multiplier
-        
-        # Ensure reasonable quotes
-        best_bid = self.exchange.get_best_bid()
-        best_ask = self.exchange.get_best_ask()
-        bid_price = min(bid_price, best_ask - 0.01)
-        ask_price = max(ask_price, best_bid + 0.01)
-                
-        bid_qty = np.random.randint(20, 80)
-        ask_qty = np.random.randint(20, 80)
-       
-        self.exchange.limit_order_placement(Order(quantity=bid_qty, direction='buy', type='limit', price=round(bid_price, 2)))
-        self.exchange.limit_order_placement(Order(quantity=ask_qty, direction='sell', type='limit', price=round(ask_price, 2)))
+        self.tick_size = exchange.tick_size
+        self.inventory = 0
+        self.max_inventory = 1000
+        self.risk_aversion = 0.01
+        self.min_order_count = 10  # Minimum number of orders on each side
 
-    def insider_market_maker(self):
-        tick_size = self.exchange.tick_size
-        mid = self.exchange.get_mid_price()
-        spread = self.exchange.get_spread()
-        half_spread = spread / 2
-        bim_best, bim_rest = self.exchange.get_book_imbalance()      
-        
-        # Probability of price moving up (simplified)
-        prob_up = 0.5 + (bim_best - 0.5) * 0.6 + (bim_rest - 0.5) * 0.4
-        
-        # Calculate expected price move
-        expected_move = (prob_up - 0.5) * 5 * tick_size
-        new_mid = mid + expected_move
+    def quote_prices(self):
+        mid_price = self.exchange.get_mid_price()
+        spread = max(self.exchange.get_spread(), self.tick_size * 2)
+        bim_best, bim_rest = self.exchange.get_book_imbalance()
 
-        # Adjust spread based on imbalance
-        imbalance_factor = 1 + abs(bim_best - 0.5)
-        adjusted_half_spread = half_spread * imbalance_factor
+        # Adjust spread based on inventory risk
+        inventory_risk = self.risk_aversion * self.inventory
+        adjusted_spread = spread * (1 + abs(inventory_risk))
+
+        # Adjust mid price based on order book imbalance
+        imbalance_adjustment = (bim_best - 0.5) * self.tick_size * 2
+        adjusted_mid = mid_price + imbalance_adjustment
+
+        return adjusted_mid, adjusted_spread
+
+    def generate_order_book(self):
+        adjusted_mid, adjusted_spread = self.quote_prices()
         
-        # Set bid and ask prices
-        bid_price = new_mid - adjusted_half_spread
-        ask_price = new_mid + adjusted_half_spread
-        
-        # Determine order quantities
-        base_qty = np.random.randint(20, 100)
-        bid_qty = int(base_qty * (1 + (0.5 - prob_up)))
-        ask_qty = int(base_qty * (1 + (prob_up - 0.5)))
-        
-        # Ensure reasonable quotes
-        best_bid = self.exchange.get_best_bid()
-        best_ask = self.exchange.get_best_ask()
-        bid_price = min(bid_price, best_ask - tick_size)
-        ask_price = max(ask_price, best_bid + tick_size)
-        
-        self.exchange.limit_order_placement(Order(quantity=bid_qty, direction='buy', type='limit', price=round(bid_price, 2)))
-        self.exchange.limit_order_placement(Order(quantity=ask_qty, direction='sell', type='limit', price=round(ask_price, 2)))
+        bid_orders = []
+        ask_orders = []
+
+        for i in range(1, self.min_order_count + 1):
+            bid_price = round(adjusted_mid - adjusted_spread / 2 - i * self.tick_size, 2)
+            ask_price = round(adjusted_mid + adjusted_spread / 2 + i * self.tick_size, 2)
+            
+            bid_qty = max(10, int(np.random.exponential(50)))
+            ask_qty = max(10, int(np.random.exponential(50)))
+            
+            bid_orders.append(Order(quantity=bid_qty, direction='buy', type='limit', price=bid_price))
+            ask_orders.append(Order(quantity=ask_qty, direction='sell', type='limit', price=ask_price))
+
+        return bid_orders, ask_orders
 
     def new_simulated_limit_order_per_step(self):
-        bim_best, bim_rest = self.exchange.get_book_imbalance()      
-        bim_best_abs = abs(bim_best - 0.5)
-        prob_uninformed = 0.5
-        prob_insider = 0.5 * (1 + bim_best_abs * 2)  # Range: (0.5, 1)
+        # Generate new order book
+        bid_orders, ask_orders = self.generate_order_book()
         
-        n_uninformed = np.random.binomial(10, prob_uninformed) 
-        n_insider = np.random.binomial(20, prob_insider)  
-                
-        for _ in range(n_uninformed):
-            self.uninformed_market_maker()
+        # Place all generated orders
+        for order in bid_orders + ask_orders:
+            self.exchange.limit_order_placement(order)
+        
+        # Ensure minimum number of orders on each side
+        self.ensure_minimum_orders()
 
-        for _ in range(n_insider):
-            self.insider_market_maker()
+    def ensure_minimum_orders(self):
+        bid_book = self.exchange.LOB['bid']
+        ask_book = self.exchange.LOB['ask']
+        
+        if len(bid_book) < self.min_order_count:
+            self.add_orders('buy', self.min_order_count - len(bid_book))
+        
+        if len(ask_book) < self.min_order_count:
+            self.add_orders('sell', self.min_order_count - len(ask_book))
+
+    def add_orders(self, direction, count):
+        mid_price = self.exchange.get_mid_price()
+        
+        for i in range(count):
+            if direction == 'buy':
+                price = round(mid_price - (i + 1) * self.tick_size, 2)
+            else:
+                price = round(mid_price + (i + 1) * self.tick_size, 2)
+            
+            qty = max(10, int(np.random.exponential(50)))
+            order = Order(quantity=qty, direction=direction, type='limit', price=price)
+            self.exchange.limit_order_placement(order)
+
+    def update_inventory(self, filled_bid, filled_ask):
+        self.inventory += filled_bid - filled_ask

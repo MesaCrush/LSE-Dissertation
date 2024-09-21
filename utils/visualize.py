@@ -1,4 +1,5 @@
 import matplotlib.pyplot as plt
+import os
 
 def visualize_episode_data(episode_data, agent_type):
     if not episode_data:
@@ -41,5 +42,5 @@ def visualize_episode_data(episode_data, agent_type):
     ax3.legend()
     
     plt.tight_layout()
-    plt.savefig(f'{agent_type.lower()}_agent_episode.png')
+    plt.savefig(os.path.join('plots', f'{agent_type.lower()}_agent_episode.png'))
     plt.close()

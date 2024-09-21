@@ -36,6 +36,7 @@ class Exchange:
         Exchange.market_order_queue.append(order)  
     
     def limit_order_placement(self, order):
+        order.price = round(order.price, 2)
         Exchange.limit_order_queue.append(order)  
 
     def __limit_order_process(self):
@@ -43,12 +44,13 @@ class Exchange:
         ask_book = self.LOB['ask']
         while self.limit_order_queue:
             order = self.limit_order_queue.popleft()
+            price = round(order.price, 2) 
             if order.type == 'limit':
                 book = bid_book if order.direction == 'buy' else ask_book
             if order.price in book:
-                book[order.price] += order.qty
+                book[price] += order.qty
             else:
-                book[order.price] = order.qty
+                book[price] = order.qty
       
      
         self.LOB['bid'] = dict(sorted(bid_book.items(), reverse=True))
@@ -102,10 +104,10 @@ class Exchange:
         return self.filled_ask, self.filled_bid
     
     def get_best_bid(self):
-        return max(self.LOB['bid'].keys())
+        return round(max(self.LOB['bid'].keys()),2)
     
     def get_best_ask(self):
-        return min(self.LOB['ask'].keys())
+        return round(min(self.LOB['ask'].keys()),2)
     
     def get_mid_price(self):
         # Ensure there is at least one buy order and one sell order
@@ -120,7 +122,7 @@ class Exchange:
         # Calculate the mid price
         mid_price = (best_bid + best_ask) / 2.0
 
-        return mid_price
+        return round(mid_price,2)
 
     def get_spread(self):
         if not self.LOB['bid'] or not self.LOB['ask']:
